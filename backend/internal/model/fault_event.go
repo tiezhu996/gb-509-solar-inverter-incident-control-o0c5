@@ -16,6 +16,12 @@ type FaultEvent struct {
 	EffectiveAt time.Time `json:"effectiveAt"`
 	Evidence    string    `json:"evidence" gorm:"size:2000"`
 	RelatedCode string    `json:"relatedCode" gorm:"size:64;index"`
+	// OccurrenceCount tracks how many duplicate reports were folded into this
+	// event, and LastReportedAt is the most recent report time. Repeated
+	// reports for the same facility + relatedCode + category inside the merge
+	// window update these fields instead of creating new events.
+	OccurrenceCount int       `json:"occurrenceCount" gorm:"not null;default:1"`
+	LastReportedAt  time.Time `json:"lastReportedAt" gorm:"index"`
 }
 
 func (item *FaultEvent) GetBase() *BaseModel { return &item.BaseModel }

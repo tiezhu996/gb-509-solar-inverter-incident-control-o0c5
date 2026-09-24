@@ -15,6 +15,8 @@ export interface DomainRecord {
   effectiveAt: string;
   evidence: string;
   relatedCode: string;
+  occurrenceCount: number;
+  lastReportedAt: string;
   createdAt: string;
   updatedAt: string;
 }
