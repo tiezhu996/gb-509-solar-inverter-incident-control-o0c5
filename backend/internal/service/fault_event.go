@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,7 +11,17 @@ import (
 	"github.com/blueship581/solar-inverter-incident-control/backend/internal/dto"
 	"github.com/blueship581/solar-inverter-incident-control/backend/internal/model"
 	"github.com/blueship581/solar-inverter-incident-control/backend/internal/repository"
+	"gorm.io/gorm"
 )
+
+// faultDedupWindow is the sliding window in which repeated reports of the same
+// fault (same site, related device and category) are merged into one event
+// instead of creating a new record each time.
+const faultDedupWindow = 15 * time.Minute
+
+// faultEvidenceLimit mirrors the Evidence column size so merged evidence never
+// exceeds what persistence can store.
+const faultEvidenceLimit = 2000
 
 type FaultEventService interface {
 	List(context.Context, dto.PageQuery) (repository.Page[model.FaultEvent], error)
@@ -43,22 +54,87 @@ func (s *faultEventService) Create(ctx context.Context, input dto.CreateFaultEve
 	if err := validateFaultEventBusinessFields(input.Code, input.Name, input.Facility, input.Owner); err != nil {
 		return model.FaultEvent{}, err
 	}
+	facility := strings.TrimSpace(input.Facility)
+	category := strings.TrimSpace(input.Category)
+	relatedCode := strings.ToUpper(strings.TrimSpace(input.RelatedCode))
+	reportedAt := input.EffectiveAt.UTC()
+	if reportedAt.IsZero() {
+		reportedAt = time.Now().UTC()
+	}
+	merged, found, err := s.mergeDuplicateReport(ctx, facility, relatedCode, category, reportedAt, input, actor, requestID)
+	if err != nil {
+		return model.FaultEvent{}, err
+	}
+	if found {
+		return merged, nil
+	}
 	item := model.FaultEvent{
 		BaseModel: model.BaseModel{
 			Code: strings.ToUpper(strings.TrimSpace(input.Code)), Name: strings.TrimSpace(input.Name),
 			Status: model.FaultEventInitialStatus, Version: 1, Description: strings.TrimSpace(input.Description),
 		},
-		Facility: strings.TrimSpace(input.Facility), Owner: strings.TrimSpace(input.Owner),
-		Category: strings.TrimSpace(input.Category), RiskLevel: input.RiskLevel,
+		Facility: facility, Owner: strings.TrimSpace(input.Owner),
+		Category: category, RiskLevel: input.RiskLevel,
 		MetricValue: input.MetricValue, MetricUnit: strings.TrimSpace(input.MetricUnit),
-		EffectiveAt: input.EffectiveAt.UTC(), Evidence: strings.TrimSpace(input.Evidence),
-		RelatedCode: strings.ToUpper(strings.TrimSpace(input.RelatedCode)),
+		EffectiveAt: reportedAt, Evidence: strings.TrimSpace(input.Evidence),
+		RelatedCode: relatedCode, OccurrenceCount: 1, LastReportedAt: reportedAt,
 	}
 	if err := s.repository.Create(ctx, &item); err != nil {
 		return model.FaultEvent{}, fmt.Errorf("create 故障事件: %w", err)
 	}
 	_ = s.security.Audit(ctx, actor, requestID, "create", "FaultEvent", item.ID, "", item.Status, "created 故障事件")
 	return item, nil
+}
+
+// mergeDuplicateReport folds a repeated report into the still-actionable event
+// for the same site, device and fault type: the occurrence count grows, the
+// last-report time advances, new evidence is appended and the risk level keeps
+// the higher severity. An acknowledged event falls back to open so the repeat
+// is handled again; mitigated or closed records are left untouched and simply
+// never match the dedup query.
+func (s *faultEventService) mergeDuplicateReport(ctx context.Context, facility, relatedCode, category string, reportedAt time.Time, input dto.CreateFaultEvent, actor, requestID string) (model.FaultEvent, bool, error) {
+	since := reportedAt.Add(-faultDedupWindow)
+	for attempt := 0; attempt < 3; attempt++ {
+		existing, err := s.repository.FindRecentDuplicate(ctx, facility, relatedCode, category, since)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return model.FaultEvent{}, false, nil
+		}
+		if err != nil {
+			return model.FaultEvent{}, false, fmt.Errorf("find duplicate 故障事件: %w", err)
+		}
+		before := existing.Status
+		expectedVersion := existing.Version
+		existing.OccurrenceCount++
+		lastReported := existing.LastReportedAt
+		if lastReported.IsZero() {
+			lastReported = existing.EffectiveAt
+		}
+		if reportedAt.After(lastReported) {
+			lastReported = reportedAt
+		}
+		existing.LastReportedAt = lastReported.UTC()
+		existing.Evidence = mergeFaultEvidence(existing.Evidence, input.Evidence)
+		existing.RiskLevel = higherRiskLevel(existing.RiskLevel, input.RiskLevel)
+		if existing.Status == string(constants.FaultStateAcknowledged) {
+			existing.Status = string(constants.FaultStateOpen)
+		}
+		existing.Version = expectedVersion + 1
+		existing.UpdatedAt = time.Now().UTC()
+		if err := s.repository.Update(ctx, existing.ID, expectedVersion, &existing); err != nil {
+			if errors.Is(err, repository.ErrVersionConflict) {
+				continue
+			}
+			return model.FaultEvent{}, false, fmt.Errorf("merge 故障事件: %w", err)
+		}
+		detail := fmt.Sprintf("merged duplicate report, occurrence=%d", existing.OccurrenceCount)
+		_ = s.security.Audit(ctx, actor, requestID, "merge", "FaultEvent", existing.ID, before, existing.Status, detail)
+		merged, err := s.repository.Get(ctx, existing.ID)
+		if err != nil {
+			return model.FaultEvent{}, false, err
+		}
+		return merged, true, nil
+	}
+	return model.FaultEvent{}, false, fmt.Errorf("merge 故障事件: %w", repository.ErrVersionConflict)
 }
 
 func (s *faultEventService) Update(ctx context.Context, id uint, input dto.UpdateFaultEvent, actor, requestID string) (model.FaultEvent, error) {
@@ -131,4 +207,36 @@ func validateFaultEventBusinessFields(code, name, facility, owner string) error 
 		return ErrInvalidInput
 	}
 	return nil
+}
+
+var faultRiskRank = map[string]int{"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+// higherRiskLevel keeps the more severe of two risk levels so a merged event
+// never downgrades the measured risk.
+func higherRiskLevel(current, incoming string) string {
+	if faultRiskRank[incoming] > faultRiskRank[current] {
+		return incoming
+	}
+	return current
+}
+
+// mergeFaultEvidence appends new evidence to the accumulated record, skipping
+// empty or already-captured fragments and capping the result at the column
+// limit without splitting multi-byte characters.
+func mergeFaultEvidence(existing, incoming string) string {
+	incoming = strings.TrimSpace(incoming)
+	if incoming == "" {
+		return existing
+	}
+	if existing == "" {
+		return incoming
+	}
+	if existing == incoming || strings.Contains(existing, incoming) {
+		return existing
+	}
+	merged := existing + " | " + incoming
+	if runes := []rune(merged); len(runes) > faultEvidenceLimit {
+		merged = string(runes[:faultEvidenceLimit])
+	}
+	return merged
 }

@@ -187,17 +187,20 @@ func seedFaultEvent(ctx context.Context, db *gorm.DB) error {
 		{BaseModel: model.BaseModel{Code: "FE-001", Name: "故障事件示例一", Status: "open", Version: 1,
 			Description: "用于启动验证和主要流程演示的故障事件记录"}, Facility: "光伏逆变器故障处置控制区域1", Owner: "运行一组",
 			Category: "常规", RiskLevel: "low", MetricValue: 12.5, MetricUnit: "unit",
-			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-509-01"},
+			EffectiveAt: now.Add(0 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-509-01",
+			OccurrenceCount: 1, LastReportedAt: now.Add(0 * time.Hour)},
 
 		{BaseModel: model.BaseModel{Code: "FE-002", Name: "故障事件示例二", Status: "acknowledged", Version: 1,
 			Description: "用于启动验证和主要流程演示的故障事件记录"}, Facility: "光伏逆变器故障处置控制区域2", Owner: "质量复核组",
 			Category: "重点", RiskLevel: "medium", MetricValue: 25.0, MetricUnit: "%",
-			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-509-02"},
+			EffectiveAt: now.Add(3 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-509-02",
+			OccurrenceCount: 1, LastReportedAt: now.Add(3 * time.Hour)},
 
 		{BaseModel: model.BaseModel{Code: "FE-003", Name: "故障事件示例三", Status: "mitigated", Version: 1,
 			Description: "用于启动验证和主要流程演示的故障事件记录"}, Facility: "光伏逆变器故障处置控制区域3", Owner: "安全主管组",
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
-			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-509-03"},
+			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-509-03",
+			OccurrenceCount: 1, LastReportedAt: now.Add(6 * time.Hour)},
 	}
 	return db.WithContext(ctx).Create(&items).Error
 }

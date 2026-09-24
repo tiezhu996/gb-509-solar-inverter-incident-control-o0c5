@@ -20,6 +20,8 @@ export function EntityPage({ config, useStore }: { config: EntityConfig; useStor
   const role = getSession()?.role || 'viewer';
   const canWrite = ['operator', 'reviewer', 'admin'].includes(role);
   const isRemoteAction = ['faultEvent', 'mitigationAction'].includes(config.key);
+  const isFaultPage = config.key === 'faultEvent';
+  const columnCount = isFaultPage ? 10 : 8;
   useEffect(() => { void load(config.path); }, [config.path, load]);
   const highRisk = useMemo(() => items.filter((item) => ['high', 'critical'].includes(item.riskLevel)).length, [items]);
   const createDemo = async () => {
@@ -40,9 +42,9 @@ export function EntityPage({ config, useStore }: { config: EntityConfig; useStor
     {['inverterUnit', 'faultEvent'].includes(config.key) && <SeverityTag records={items} />}
     <section className="toolbar"><input aria-label="搜索" placeholder={`搜索${config.label}编码或名称`} value={search} onChange={(event) => setSearch(event.target.value)} /><UiButton onClick={() => void load(config.path, search)}>查询</UiButton><button className="link-button" onClick={() => { setSearch(''); void load(config.path); }}>重置</button></section>
     {error && <div className="alert" role="alert">{error}</div>}
-    <section className="table-shell" aria-busy={loading}><table><thead><tr><th>编码</th><th>名称</th><th>状态</th><th>风险</th><th>责任人</th><th>指标</th><th>更新时间</th><th>操作</th></tr></thead><tbody>
-      {items.map((item) => { const next = nextStatus(item.status, config.statuses); return <tr key={item.id}><td><strong>{item.code}</strong></td><td>{item.name}<small>{item.facility}</small></td><td><StatusBadge status={item.status}/></td><td>{item.riskLevel}</td><td>{item.owner}</td><td>{item.metricValue} {item.metricUnit}</td><td>{formatDate(item.updatedAt)}</td><td>{next ? <button className="table-action" disabled={!canWrite} onClick={() => setPending({ item, status: next })}>{canWrite ? '推进至' : '无权限推进至'} {next}</button> : <span className="muted">流程结束</span>}</td></tr>; })}
-      {!items.length && !loading && <tr><td colSpan={8} className="empty">暂无记录</td></tr>}
+    <section className="table-shell" aria-busy={loading}><table><thead><tr><th>编码</th><th>名称</th><th>状态</th><th>风险</th><th>责任人</th><th>指标</th>{isFaultPage && <th>累计次数</th>}{isFaultPage && <th>最近上报</th>}<th>更新时间</th><th>操作</th></tr></thead><tbody>
+      {items.map((item) => { const next = nextStatus(item.status, config.statuses); return <tr key={item.id}><td><strong>{item.code}</strong></td><td>{item.name}<small>{item.facility}</small></td><td><StatusBadge status={item.status}/></td><td>{item.riskLevel}</td><td>{item.owner}</td><td>{item.metricValue} {item.metricUnit}</td>{isFaultPage && <td>{item.occurrenceCount ?? 1}</td>}{isFaultPage && <td>{formatDate(item.lastReportedAt || item.effectiveAt)}</td>}<td>{formatDate(item.updatedAt)}</td><td>{next ? <button className="table-action" disabled={!canWrite} onClick={() => setPending({ item, status: next })}>{canWrite ? '推进至' : '无权限推进至'} {next}</button> : <span className="muted">流程结束</span>}</td></tr>; })}
+      {!items.length && !loading && <tr><td colSpan={columnCount} className="empty">暂无记录</td></tr>}
     </tbody></table>{loading && <div className="loading">正在同步业务数据…</div>}</section>
     <ConfirmDialog open={showCreate} title={`新增${config.label}`} onCancel={() => setShowCreate(false)} onConfirm={() => { void createDemo().catch(() => undefined); }}><p>将创建一条包含完整责任人、风险和证据信息的演示记录。</p></ConfirmDialog>
     <ConfirmDialog open={Boolean(pending) && !remoteConfirm} title="确认状态迁移" onCancel={() => setPending(null)} onConfirm={() => { if (isRemoteAction) setRemoteConfirm(true); else void finalizeTransition(); }}><p>状态迁移会写入审计日志，且使用版本号避免并发覆盖。</p><strong>{pending?.item.status} → {pending?.status}</strong></ConfirmDialog>

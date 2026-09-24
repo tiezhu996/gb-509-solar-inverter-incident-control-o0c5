@@ -16,6 +16,11 @@ type FaultEvent struct {
 	EffectiveAt time.Time `json:"effectiveAt"`
 	Evidence    string    `json:"evidence" gorm:"size:2000"`
 	RelatedCode string    `json:"relatedCode" gorm:"size:64;index"`
+	// OccurrenceCount tracks how many duplicate reports were merged into this
+	// event; LastReportedAt is the most recent report time inside the dedup
+	// window. Both are maintained by the service layer during dedup merges.
+	OccurrenceCount int       `json:"occurrenceCount" gorm:"not null;default:1"`
+	LastReportedAt  time.Time `json:"lastReportedAt" gorm:"index"`
 }
 
 func (item *FaultEvent) GetBase() *BaseModel { return &item.BaseModel }
